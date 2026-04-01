@@ -90,6 +90,12 @@ def save_live_preview(model_path, image):
     torchvision.utils.save_image(torch.clamp(image.detach(), 0.0, 1.0).cpu(), preview_path)
 
 
+def render_live_preview(scene, gaussians, pipe, background, preview_camera):
+    preview_pose = gaussians.get_RT(preview_camera.uid)
+    preview_render = render(preview_camera, gaussians, pipe, background, camera_pose=preview_pose)["render"]
+    save_live_preview(scene.model_path, preview_render)
+
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, preview_interval):
 
     first_iter = 0
@@ -110,11 +116,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussians.restore(model_params, opt)
 
     train_cams_init = scene.getTrainCameras().copy()
+    preview_camera = train_cams_init[len(train_cams_init) // 2]
     for save_iter in saving_iterations:
         os.makedirs(scene.model_path + f'/pose/ours_{save_iter}', exist_ok=True)
         save_pose(scene.model_path + f'/pose/ours_{save_iter}/pose_org.npy', gaussians.P, train_cams_init)
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    with torch.no_grad():
+        render_live_preview(scene, gaussians, pipe, background, preview_camera)
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
@@ -195,9 +204,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
                 progress_bar.update(10)
             if preview_interval > 0 and (
-                iteration == 1 or iteration % int(preview_interval) == 0
+                iteration == 1 or iteration == opt.iterations or iteration % int(preview_interval) == 0
             ):
-                save_live_preview(scene.model_path, image)
+                render_live_preview(scene, gaussians, pipe, background, preview_camera)
             if iteration == opt.iterations:
                 progress_bar.close()
 
