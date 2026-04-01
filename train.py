@@ -85,6 +85,11 @@ def load_and_prepare_confidence(confidence_path, device='cuda', scale=(0.1, 1.0)
     return lr_modifiers
 
 
+def save_live_preview(model_path, image):
+    preview_path = os.path.join(model_path, "latest_preview.png")
+    torchvision.utils.save_image(torch.clamp(image.detach(), 0.0, 1.0), preview_path)
+
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     first_iter = 0
@@ -189,6 +194,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration % 10 == 0:
                 progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
                 progress_bar.update(10)
+            if getattr(opt, "preview_interval", 0) > 0 and (
+                iteration == 1 or iteration % int(opt.preview_interval) == 0
+            ):
+                save_live_preview(scene.model_path, image)
             if iteration == opt.iterations:
                 progress_bar.close()
 
@@ -310,6 +319,7 @@ if __name__ == "__main__":
     parser.add_argument('--disable_viewer', action='store_true', default=True)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--preview_interval", type=int, default=10)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
