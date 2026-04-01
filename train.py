@@ -87,10 +87,10 @@ def load_and_prepare_confidence(confidence_path, device='cuda', scale=(0.1, 1.0)
 
 def save_live_preview(model_path, image):
     preview_path = os.path.join(model_path, "latest_preview.png")
-    torchvision.utils.save_image(torch.clamp(image.detach(), 0.0, 1.0), preview_path)
+    torchvision.utils.save_image(torch.clamp(image.detach(), 0.0, 1.0).cpu(), preview_path)
 
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, preview_interval):
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -194,8 +194,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration % 10 == 0:
                 progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
                 progress_bar.update(10)
-            if getattr(opt, "preview_interval", 0) > 0 and (
-                iteration == 1 or iteration % int(opt.preview_interval) == 0
+            if preview_interval > 0 and (
+                iteration == 1 or iteration % int(preview_interval) == 0
             ):
                 save_live_preview(scene.model_path, image)
             if iteration == opt.iterations:
@@ -334,7 +334,17 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(
+        lp.extract(args),
+        op.extract(args),
+        pp.extract(args),
+        args.test_iterations,
+        args.save_iterations,
+        args.checkpoint_iterations,
+        args.start_checkpoint,
+        args.debug_from,
+        args.preview_interval,
+    )
 
     # All done
     print("\nTraining complete.")
