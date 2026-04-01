@@ -33,6 +33,11 @@ from utils.camera_utils import generate_interpolated_path
 from utils.camera_utils import visualizer
 from arguments import ModelParams, PipelineParams, get_combined_args
 
+
+def save_live_preview(model_path, image):
+    preview_path = Path(model_path) / "latest_preview.png"
+    torchvision.utils.save_image(torch.clamp(image.detach(), 0.0, 1.0).cpu(), preview_path)
+
 def save_interpolate_pose(model_path, iter, n_views):
 
     org_pose = np.load(model_path / f"pose/ours_{iter}/pose_optimized.npy")
@@ -87,6 +92,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         rendering = render(
             view, gaussians, pipeline, background, camera_pose=camera_pose
         )["render"]
+        save_live_preview(model_path, rendering)
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(
             rendering, os.path.join(render_path, "{0:05d}".format(idx) + ".png")
@@ -161,6 +167,7 @@ def render_set_optimize(model_path, name, iteration, views, gaussians, pipeline,
         optimal_pose = torch.cat([camera_tensor_q, camera_tensor_T])
         # print("optimal_pose-camera_pose: ", optimal_pose-camera_pose)
         rendering_opt = render(view, gaussians, pipeline, background, camera_pose=optimal_pose)["render"]
+        save_live_preview(model_path, rendering_opt)
             
         torchvision.utils.save_image(
             rendering_opt, os.path.join(render_path, view.image_name + ".png")
