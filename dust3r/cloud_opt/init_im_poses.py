@@ -20,6 +20,24 @@ from dust3r.viz import to_numpy
 from dust3r.cloud_opt.commons import edge_str, i_j_ij, compute_edge_scores
 
 
+def _coerce_focal_value(focal):
+    if focal is None:
+        return None
+    if isinstance(focal, torch.Tensor):
+        if focal.numel() == 0:
+            return None
+        focal = focal.detach().float().mean().item()
+    elif isinstance(focal, np.ndarray):
+        if focal.size == 0:
+            return None
+        focal = float(np.asarray(focal, dtype=np.float64).mean())
+    else:
+        focal = float(focal)
+    if not np.isfinite(focal) or focal <= 0:
+        return None
+    return focal
+
+
 @torch.no_grad()
 def init_from_known_poses(self, niter_PnP=10, min_conf_thr=3):
     device = self.device
@@ -80,11 +98,16 @@ def init_minimum_spanning_tree(self, focal_avg=False, known_focal=None, **kw):
             im_focals[i] = known_focal
         self.preset_focal(known_focals=repeat_focal)
     elif focal_avg:
-        im_focals_avg = np.array(im_focals).mean()
-        for i in range(len(im_focals)):
-            im_focals[i] = im_focals_avg
-        repeat_focal = np.array(im_focals)#.cpu().numpy()
-        self.preset_focal(known_focals=repeat_focal)
+        valid_focals = [_coerce_focal_value(focal) for focal in im_focals]
+        valid_focals = [focal for focal in valid_focals if focal is not None]
+        if valid_focals:
+            im_focals_avg = float(np.mean(valid_focals))
+            for i in range(len(im_focals)):
+                im_focals[i] = im_focals_avg
+            repeat_focal = np.repeat(im_focals_avg, len(im_focals))
+            self.preset_focal(known_focals=repeat_focal)
+        elif getattr(self, "verbose", False):
+            print(" warning: focal_avg requested, but no valid focals were available during MST init")
 
     return init_from_pts3d(self, pts3d, im_focals, im_poses)
 

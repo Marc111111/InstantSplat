@@ -247,6 +247,58 @@ def save_intrinsics(sparse_path, focals, org_imgs_shape, imgs_shape, save_focals
         np.save(sparse_path / 'non_scaled_focals.npy', focals)
 
 
+def _iter_point_views(imgs, pts3d, confs, masks=None, use_masks=True):
+    n_views = len(pts3d)
+    for view_idx in range(n_views):
+        pts_view = np.asarray(pts3d[view_idx]).reshape(-1, 3)
+        img_view = np.asarray(imgs[view_idx]).reshape(-1, 3)
+        conf_view = np.asarray(confs[view_idx]).reshape(-1, 1)
+        if use_masks and masks is not None:
+            mask_view = np.asarray(masks[view_idx]).reshape(-1)
+            pts_view = pts_view[mask_view]
+            img_view = img_view[mask_view]
+            conf_view = conf_view[mask_view]
+        yield pts_view, img_view, conf_view
+
+
+def _allocate_sample_counts(counts, max_pts_num):
+    total = int(sum(counts))
+    if total <= max_pts_num:
+        return list(counts)
+    raw = np.array(counts, dtype=np.float64) * (float(max_pts_num) / float(total))
+    allocated = np.floor(raw).astype(int)
+    remainder = int(max_pts_num - int(allocated.sum()))
+    if remainder > 0:
+        fractions = raw - allocated
+        for idx in np.argsort(fractions)[::-1][:remainder]:
+            if counts[idx] > 0:
+                allocated[idx] += 1
+    return [int(min(counts[idx], allocated[idx])) for idx in range(len(counts))]
+
+
+def _sample_view_points(pts_view, img_view, conf_view, sample_count):
+    if sample_count <= 0 or len(pts_view) == 0:
+        return (
+            np.empty((0, 3), dtype=np.float32),
+            np.empty((0, 3), dtype=np.float32),
+            np.empty((0, 1), dtype=np.float32),
+        )
+    if len(pts_view) <= sample_count:
+        return pts_view, img_view, conf_view
+
+    conf_flat = conf_view.reshape(-1).astype(np.float64)
+    conf_min = float(conf_flat.min())
+    conf_max = float(conf_flat.max())
+    if conf_max > conf_min:
+        weights = (conf_flat - conf_min) / (conf_max - conf_min)
+        weights = weights + 1.0
+        weights = weights / weights.sum()
+        indices = np.random.choice(len(pts_view), sample_count, replace=False, p=weights)
+    else:
+        indices = np.random.choice(len(pts_view), sample_count, replace=False)
+    return pts_view[indices], img_view[indices], conf_view[indices]
+
+
 def save_points3D(sparse_path, imgs, pts3d, confs, masks=None, use_masks=True, save_all_pts=False, save_txt_path=None, depth_threshold=0.1, max_pts_num=150 * 10**10):
     
     points3D_bin_file = sparse_path / 'points3D.bin'
@@ -257,46 +309,41 @@ def save_points3D(sparse_path, imgs, pts3d, confs, masks=None, use_masks=True, s
     imgs = to_numpy(imgs)
     pts3d = to_numpy(pts3d)
     confs = to_numpy(confs)
-    if confs is not None:
+    masks = to_numpy(masks) if masks is not None else None
+
+    point_views = list(_iter_point_views(imgs, pts3d, confs, masks=masks, use_masks=use_masks))
+    counts = [len(pts_view) for pts_view, _, _ in point_views]
+    vanilla_pts_num = int(sum(np.asarray(view_pts).reshape(-1, 3).shape[0] for view_pts in pts3d))
+    co_mask_dsp_pts_num = int(sum(counts))
+    sample_counts = _allocate_sample_counts(counts, max_pts_num)
+    if co_mask_dsp_pts_num > max_pts_num:
+        print(f'Downsampling points from {co_mask_dsp_pts_num} to {max_pts_num}')
+
+    sampled_pts = []
+    sampled_col = []
+    sampled_confs = []
+    for (pts_view, img_view, conf_view), sample_count in zip(point_views, sample_counts):
+        pts_chunk, img_chunk, conf_chunk = _sample_view_points(pts_view, img_view, conf_view, sample_count)
+        if len(pts_chunk) == 0:
+            continue
+        sampled_pts.append(pts_chunk)
+        sampled_col.append(img_chunk)
+        sampled_confs.append(conf_chunk)
+
+    pts = np.concatenate(sampled_pts, axis=0) if sampled_pts else np.empty((0, 3), dtype=np.float32)
+    col = np.concatenate(sampled_col, axis=0) * 255.0 if sampled_col else np.empty((0, 3), dtype=np.float32)
+    confs = np.concatenate(sampled_confs, axis=0) if sampled_confs else np.empty((0, 1), dtype=np.float32)
+
+    if save_all_pts and confs is not None:
         np.save(sparse_path / 'confidence.npy', confs)
-
-    # Process points and colors
-    if use_masks:
-        masks = to_numpy(masks)
-        pts = np.concatenate([p[m] for p, m in zip(pts3d, masks)])
-        # pts = np.concatenate([p[m] for p, m in zip(pts3d, masks.reshape(masks.shape[0], -1))])
-        col = np.concatenate([p[m] for p, m in zip(imgs, masks)])
-        confs = np.concatenate([p[m] for p, m in zip(confs, masks.reshape(masks.shape[0], -1))])
-    else:
-        pts = np.array(pts3d)
-        col = np.array(imgs)
-        confs = np.array(confs)
-
-    pts = pts.reshape(-1, 3)
-    col = col.reshape(-1, 3) * 255.
-    confs = confs.reshape(-1, 1)
-
-    co_mask_dsp_pts_num = pts.shape[0]
-    if pts.shape[0] > max_pts_num:
-        print(f'Downsampling points from {pts.shape[0]} to {max_pts_num}')
-        # Normalize confidences to range (0, 1)
-        confs_min = np.min(confs)
-        confs_max = np.max(confs)
-        confs = (confs - confs_min) / (confs_max - confs_min)
-        confs = confs + 1
-        weights = confs.reshape(-1) / np.sum(confs)        
-        indices = np.random.choice(pts.shape[0], max_pts_num, replace=False, p=weights)
-        pts = pts[indices]
-        col = col[indices]
-        confs = confs[indices]
-        conf_dsp_pts_num = pts.shape[0]
     if confs is not None:
         np.save(sparse_path / 'confidence_dsp.npy', confs)
+    conf_dsp_pts_num = int(pts.shape[0])
 
     storePly(points3D_ply_file, pts, col)
     if save_all_pts:
-        np.save(sparse_path / 'points3D_all.npy', pts3d)
-        np.save(sparse_path / 'pointsColor_all.npy', imgs)
+        np.save(sparse_path / 'points3D_all.npy', np.asarray(pts3d))
+        np.save(sparse_path / 'pointsColor_all.npy', np.asarray(imgs))
     
     # Write pts_num.txt
     if isinstance(save_txt_path, str):
@@ -304,12 +351,12 @@ def save_points3D(sparse_path, imgs, pts3d, confs, masks=None, use_masks=True, s
     pts_num_file = save_txt_path / f'pts_num.txt'  # New file for pts_num
     with open(pts_num_file, 'a') as f:
         f.write(f"Depth threshold: {depth_threshold}\n")
-        f.write(f"Vanilla points num: {pts3d.reshape(-1, 3).shape[0]}\n")
+        f.write(f"Vanilla points num: {vanilla_pts_num}\n")
         f.write(f"Co_Mask DSP points num: {co_mask_dsp_pts_num}\n")
-        f.write(f"Co_Mask DSP ratio: {co_mask_dsp_pts_num / pts3d.reshape(-1, 3).shape[0]}\n")
+        f.write(f"Co_Mask DSP ratio: {co_mask_dsp_pts_num / vanilla_pts_num}\n")
         if co_mask_dsp_pts_num > max_pts_num:
             f.write(f"Conf_Mask DSP points num: {conf_dsp_pts_num}\n")
-            f.write(f"Conf_Mask DSP ratio: {conf_dsp_pts_num / pts3d.reshape(-1, 3).shape[0]}\n")
+            f.write(f"Conf_Mask DSP ratio: {conf_dsp_pts_num / vanilla_pts_num}\n")
         f.write("\n")
     
     return pts.shape[0]
@@ -375,6 +422,10 @@ def normalize_depth(depth_map):
 def compute_co_vis_masks(sorted_conf_indices, depthmaps, pointmaps, camera_intrinsics, extrinsics_w2c, image_sizes, depth_threshold=0.1):
 
     num_images, h, w, _ = image_sizes
+    if isinstance(pointmaps, list):
+        pointmaps = np.stack([np.asarray(view_pts) for view_pts in pointmaps], axis=0)
+    else:
+        pointmaps = np.asarray(pointmaps)
     pointmaps = pointmaps.reshape(num_images, h, w, 3)
     overlapping_masks = np.zeros((num_images, h, w), dtype=bool)
     
