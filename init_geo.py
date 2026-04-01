@@ -36,7 +36,7 @@ def resolve_pair_policy(
         resolved_scene_graph = scene_graph
     elif infer_video and n_views > 48:
         resolved_scene_graph = "logwin-4-noncyclic"
-    elif infer_video and n_views > 24:
+    elif infer_video and n_views >= 16:
         resolved_scene_graph = "logwin-5-noncyclic"
     else:
         resolved_scene_graph = "complete"
@@ -46,7 +46,7 @@ def resolve_pair_policy(
 
     # Long video-like sequences do not need mirrored pair duplication during geometry init.
     # Keeping one directed edge per selected pair reduces host-memory pressure substantially.
-    if infer_video and n_views > 24 and symmetrize_pairs is None:
+    if infer_video and n_views >= 16 and symmetrize_pairs is None:
         resolved_symmetrize = False
 
     return resolved_scene_graph, resolved_prefilter, resolved_symmetrize
@@ -111,7 +111,7 @@ def inference_for_global_alignment(pairs, model, device, *, batch_size: int = 1,
 def main(source_path, model_path, ckpt_path, device, batch_size, image_size, schedule, lr, niter, 
          min_conf_thr, llffhold, n_views, co_vis_dsp, depth_thre, conf_aware_ranking=False, focal_avg=False, infer_video=False,
          scene_graph="auto", pair_prefilter=None, symmetrize_pairs=None):
-    long_sequence_mode = infer_video and n_views > 24
+    long_sequence_mode = infer_video and n_views >= 16
     effective_niter = min(int(niter), 150) if long_sequence_mode else int(niter)
     if long_sequence_mode and co_vis_dsp:
         print(">> Disabling co-visibility masks for long-sequence geometry init to reduce host-memory pressure.", flush=True)
@@ -240,7 +240,12 @@ def main(source_path, model_path, ckpt_path, device, batch_size, image_size, sch
     save_extrinsic(sparse_0_path, extrinsics_w2c, image_files, image_suffix)
     save_intrinsics(sparse_0_path, focals, org_imgs_shape, imgs.shape, save_focals=True)
     save_all_pts = not infer_video
-    max_pts_num = 2_000_000 if infer_video and n_views > 24 else 150 * 10**10
+    if infer_video and n_views > 32:
+        max_pts_num = 500_000
+    elif infer_video and n_views >= 16:
+        max_pts_num = 750_000
+    else:
+        max_pts_num = 150 * 10**10
     pts_num = save_points3D(
         sparse_0_path,
         imgs,
